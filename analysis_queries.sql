@@ -1,82 +1,92 @@
--- 1) Top 5 total balance per customer
-SELECT TOP 5
-    c.CustomerID, c.Name, SUM(a.Balance) AS Total_Balance
-FROM #Customers c
-LEFT JOIN #Accounts a ON c.CustomerID = a.CustomerID
+-- Total Sales
+SELECT SUM(TotalAmount) AS Total_Sales FROM #Orders;
+
+-- Total Orders
+SELECT COUNT(*) AS Total_Orders FROM #Orders;
+
+-- Total Customers
+SELECT COUNT(DISTINCT CustomerID) AS Total_Customers FROM #Customers;
+
+-- Average Order Value
+SELECT ROUND(SUM(TotalAmount)*1.0/COUNT(*),2) AS AvgOrderValue FROM #Orders;
+
+-- Repeat Customers
+SELECT CustomerID, Total_Orders FROM (
+    SELECT CustomerID, COUNT(*) AS Total_Orders FROM #Orders
+    GROUP BY CustomerID
+) t WHERE Total_Orders > 1;
+
+-- Top 5 Cities by Revenue
+SELECT TOP 5 c.City, SUM(o.TotalAmount) AS Total_Revenue
+FROM #Customers AS c
+LEFT JOIN #Orders AS o ON c.CustomerID = o.CustomerID
+GROUP BY c.City
+ORDER BY Total_Revenue DESC;
+
+-- Top 5 Products by Quantity Sold
+SELECT TOP 5 p.ProductName, SUM(od.Quantity) AS Total_Quantity
+FROM #OrderDetails AS od
+LEFT JOIN #Products AS p ON od.ProductID = p.ProductID
+GROUP BY p.ProductName
+ORDER BY Total_Quantity DESC;
+
+-- Year-over-Year Sales Performance
+WITH YearSales AS (
+    SELECT YEAR(OrderDate) AS Year, SUM(TotalAmount) AS Total_Sales
+    FROM #Orders
+    GROUP BY YEAR(OrderDate)
+)
+SELECT Year, Total_Sales,
+       LAG(Total_Sales) OVER (ORDER BY Year) AS Previous_Year,
+       ROUND((Total_Sales - LAG(Total_Sales) OVER (ORDER BY Year)) * 100.0 /
+             NULLIF(LAG(Total_Sales) OVER (ORDER BY Year), 0), 2) AS YoY_Percentage_Change
+FROM YearSales;
+
+-- Customer Lifetime Value (CLV)
+SELECT c.Name, c.City, o.OrderDate, od.OrderID, od.ProductID, od.Quantity, p.ProductName, p.Category, p.Price
+FROM #Customers AS c
+LEFT JOIN #Orders AS o ON c.CustomerID = o.CustomerID
+LEFT JOIN #OrderDetails AS od ON o.OrderID = od.OrderID
+LEFT JOIN #Products AS p ON od.ProductID = p.ProductID;
+
+-- Monthly Active Customers
+SELECT YEAR(OrderDate) AS Year, DATENAME(MONTH, OrderDate) AS Month_Name,
+       COUNT(DISTINCT CustomerID) AS Active_Customers
+FROM #Orders
+GROUP BY YEAR(OrderDate), DATENAME(MONTH, OrderDate)
+ORDER BY Year, Month_Name;
+
+-- RFM (Recency, Frequency, Monetary)
+SELECT c.CustomerID, c.Name,
+       DATEDIFF(DAY, MAX(o.OrderDate), GETDATE()) AS Recency,
+       COUNT(o.OrderID) AS Frequency,
+       SUM(o.TotalAmount) AS Monetary
+FROM #Customers AS c
+LEFT JOIN #Orders AS o ON c.CustomerID = o.CustomerID
 GROUP BY c.CustomerID, c.Name
-ORDER BY Total_Balance DESC;
+ORDER BY Monetary DESC;
 
--- 2) Top 5 most traded stocks (by total value)
-SELECT TOP 5
-    st.StockSymbol, st.TradeType, SUM(st.TotalValue) AS Total_Sales
-FROM #StockTrades st
-GROUP BY st.StockSymbol, st.TradeType
-ORDER BY Total_Sales DESC;
-
--- 3) Loan default percentage by loan type
-SELECT 
-    LoanType,
-    COUNT(*) AS Total_Loans,
-    SUM(CASE WHEN Status = 'Default' THEN 1 ELSE 0 END) AS Default_Loans,
-    CAST(SUM(CASE WHEN Status = 'Default' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS DECIMAL(5,2)) AS Default_Rate_Percent
-FROM #Loans
-GROUP BY LoanType;
-
--- 4) Monthly deposit vs withdrawal
-SELECT
-    YEAR(TransactionDate) AS [Year],
-    MONTH(TransactionDate) AS [Month],
-    SUM(CASE WHEN Type = 'Deposit'    THEN Amount END) AS Deposit_Amount,
-    SUM(CASE WHEN Type = 'Withdrawal' THEN Amount END) AS Withdrawal_Amount
-FROM #Transactions
-GROUP BY YEAR(TransactionDate), MONTH(TransactionDate)
-ORDER BY [Year], [Month];
-
--- 5) Profit / Loss per stock trade (based on previous trade price)
-WITH Cte_Stock AS (
-    SELECT *,
-           LAG(PricePerShare) OVER (ORDER BY TradeDate) AS Previous_Price
-    FROM #StockTrades
+-- Pareto 80/20 Rule
+WITH CustomerSales AS (
+    SELECT c.CustomerID, c.Name, SUM(o.TotalAmount) AS Total_Sales
+    FROM #Customers AS c
+    LEFT JOIN #Orders AS o ON c.CustomerID = o.CustomerID
+    GROUP BY c.CustomerID, c.Name
+),
+Ranked AS (
+    SELECT CustomerID, Name, Total_Sales,
+           SUM(Total_Sales) OVER (ORDER BY Total_Sales DESC) * 100.0 /
+           SUM(Total_Sales) OVER () AS Percentage
+    FROM CustomerSales
 )
-SELECT
-    TradeID, AccountID, StockSymbol, TradeDate, Quantity, PricePerShare,
-    CASE WHEN Previous_Price IS NULL THEN 0
-         ELSE (PricePerShare - Previous_Price) * Quantity END AS Profit_Loss,
-    CASE WHEN (PricePerShare - Previous_Price) * Quantity > 0 THEN 'Profit' ELSE 'Loss' END AS Flag
-FROM Cte_Stock;
+SELECT * FROM Ranked WHERE Percentage < 80;
 
--- 6) Top 3 customers by total trading volume
-WITH Cte_Trade AS (
-    SELECT a.CustomerID, SUM(st.TotalValue) AS Total_StockTrade
-    FROM #Accounts a
-    JOIN #StockTrades st ON a.AccountID = st.AccountID
-    GROUP BY a.CustomerID
-)
-SELECT TOP 3
-    c.Name, ct.Total_StockTrade,
-    RANK() OVER (ORDER BY ct.Total_StockTrade DESC) AS Rank_of_Customers
-FROM Cte_Trade ct
-JOIN #Customers c ON ct.CustomerID = c.CustomerID
-ORDER BY Rank_of_Customers;
-
--- 7) Monthly loan disbursement trend
-SELECT
-    YEAR(StartDate) AS [Year],
-    MONTH(StartDate) AS [Month],
-    SUM(LoanAmount) AS Loan_Amount,
-    DATENAME(MONTH, StartDate) AS Month_Name
-FROM #Loans
-GROUP BY YEAR(StartDate), MONTH(StartDate), DATENAME(MONTH, StartDate)
-ORDER BY [Year], [Month];
-
--- 8) Average transaction amount by customer
-WITH Transaction_Value AS (
-    SELECT a.AccountID, a.CustomerID, ROUND(AVG(t.Amount), 2) AS Avg_Amount
-    FROM #Transactions t
-    JOIN #Accounts a ON t.AccountID = a.AccountID
-    GROUP BY a.AccountID, a.CustomerID
-)
-SELECT tv.AccountID, tv.CustomerID, c.Name, tv.Avg_Amount AS Average_Amount
-FROM Transaction_Value tv
-JOIN #Customers c ON tv.CustomerID = c.CustomerID
-ORDER BY Average_Amount DESC;
+-- Customer Segmentation by Order Frequency
+SELECT c.Name, c.City,
+       COUNT(o.OrderID) AS Total_Orders,
+       CASE WHEN COUNT(o.OrderID) > 10 THEN 'Platinum'
+            WHEN COUNT(o.OrderID) BETWEEN 5 AND 10 THEN 'Gold'
+            ELSE 'Silver' END AS Segment
+FROM #Customers AS c
+LEFT JOIN #Orders AS o ON c.CustomerID = o.CustomerID
+GROUP BY c.Name, c.City;
